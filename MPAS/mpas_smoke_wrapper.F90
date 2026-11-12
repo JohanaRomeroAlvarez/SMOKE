@@ -11,8 +11,11 @@ module mpas_smoke_wrapper
    use mpas_smoke_config
    use mpas_smoke_init 
    use module_plumerise,      only : ebu_driver
-   use module_fire_emissions
-   use module_add_emiss_burn, only : add_emis_burn
+   ! Testing emission module, Minsu Choi
+   use module_fire_emissions, only : compute_emission_factors,          &
+                                     calculate_smoke_emissions,         &
+                                     add_emis_burn
+!   use module_add_emiss_burn, only : add_emis_burn
    use dep_dry_simple_mod,    only : dry_dep_driver_simple
    use dep_dry_mod_emerson,   only : dry_dep_driver_emerson, particle_settling_wrapper
    use dep_dry_mod_wesley,    only : calc_gas_dep_vel
@@ -119,6 +122,7 @@ contains
            hwp_method            , hwp_alpha             , wetdep_ls_opt        ,            &
            wetdep_ls_alpha       , plumerise_opt         , plume_wind_eff       ,            &
            plume_alpha           , bb_emis_scale_factor, ebb_dcycle             ,            &
+           run_mode,                                                                         &
            drydep_opt            , pm_settling           , add_fire_heat_flux   ,            &
            add_fire_moist_flux   , plumerisefire_frq     , bb_qv_scale_factor   ,            &
            dust_opt              ,                                                           &
@@ -164,7 +168,7 @@ contains
            swdown                , z0                    , snowh                ,            &
            julian                , rmol                  , raincv               ,            &
            rainncv               , dpt2m                 , znt                  ,            &
-           mavail                , g                     , vegfra               ,            &
+           mavail                , g                     ,                                   &
            landusef              , cldfrac               , ktop_deep            ,            &
            refl10cm              ,                                                           &
            cp                    , rd                    , gmt                  ,            &
@@ -206,7 +210,6 @@ contains
     real(RKIND),intent(in), dimension(ims:ime, jms:jme)            :: u10, v10      ! 10-m winds
     real(RKIND),intent(in), dimension(ims:ime, jms:jme)            :: tskin, t2m, dpt2m            ! temperature
     real(RKIND),intent(in), dimension(ims:ime, jms:jme)            :: pblh              ! PBL height [m]
-    real(RKIND),intent(in), dimension(ims:ime, jms:jme)            :: vegfra
     real(RKIND),intent(in), dimension(ims:ime, jms:jme)            :: swdown, z0, snowh, znt
     real(RKIND),intent(in), dimension(ims:ime, jms:jme)            :: coszen
     real(RKIND),intent(in), dimension(ims:ime, jms:jme)            :: raincv, rainncv, mavail                    
@@ -363,6 +366,7 @@ contains
      real(kind=RKIND),intent(in)      :: anthro_emis_scale_factor
      real(kind=RKIND),intent(in)      :: anthro_pt_emis_scale_factor
      integer,intent(in)               :: ebb_dcycle
+     integer,intent(in)               :: run_mode !JR added
      integer,intent(in)               :: drydep_opt
      integer,intent(in)               :: pm_settling
      logical,intent(in)               :: add_fire_heat_flux
@@ -399,10 +403,13 @@ contains
 !>-- indexes, time
     integer :: julday
 !>- dust & chemistry variables
-    real(RKIND), dimension(ims:ime, 1:nlcat, jms:jme) :: vegfrac
+!    real(RKIND), dimension(ims:ime, 1:nlcat, jms:jme) :: c
 !>- plume variables
     ! -- buffers
     real(RKIND), dimension(ims:ime, kms:kme, jms:jme, num_e_bb_in) :: ebu
+    ! Testing Emission module, Minsu Choi
+    ! THis part will be removed after testing
+    real(RKIND), dimension(ims:ime, jms:jme) :: EFs_map_work, fmc_dummy
     real(RKIND), dimension(ims:ime, jms:jme)          :: flam_frac,                               &
                                                          fire_hist, peak_hr,                      &
                                                          hwp_day_avg,                             &
@@ -526,7 +533,7 @@ contains
     !>- get ready for chemistry run
     call mpas_smoke_prep(                                                   &
         do_mpas_smoke,                                                      &
-        ktau, nlcat,cp,ebb_dcycle,ebb_min,                                  &
+        ktau, nlcat,cp,ebb_dcycle,run_mode,ebb_min,                         & !JR added run_mode
         xland,xlat,xlong,ivgtyp,isltyp,landusef,                            & ! JLS TODO LANDUSEF /= VEGFRA?
         snowh,u10,v10,wind10m,t2m,dpt2m,mavail,hwp,hwp_day_avg,             &
         hwp_method, totprcp_prev24, swdown, hpbl2d, curr_secs,               & ! SRB: added for HWP calcs 
@@ -584,107 +591,106 @@ contains
 
         
    if ( do_mpas_smoke ) then
-! Are we calculating emissions online?
-      if ( calc_bb_emis_online ) then
-         call mpas_log_write( ' Calling module wildfire smoke emissions ')
-           ! Calculate the wildfire emission factors
-             call compute_emission_factors( EFs_map, vegfrac, bb_beta,                       &
-                                            eco_id, efs_smold, efs_flam, efs_rsmold,         &
-                                            fmc_avg, mavail,                                 &
-                                            nlcat, dt, gmt,                                  &
-                                            ids, ide, jds, jde, kds, kde,                    &
-                                            ims, ime, jms, jme, kms, kme,                    &
-                                            its, ite, jts, jte, kts, kte)
-         !TODO, JR replace by dynamic EFs 
-         if ( ebb_dcycle .eq. 2 ) then
-           call calculate_smoke_emissions(   dt, julday, nlcat, EFs_map, fre_avg,            &
-                                             ebb_dcycle, area, nblocks, ktau,                &
-                                             bb_input_prevh,ebu,num_e_bb_in,                 &
-                                             ids, ide, jds, jde, kds, kde,                   &
-                                             ims, ime, jms, jme, kms, kme,                   &
-                                             its, ite, jts, jte, kts, kte)
-         else
-           call calculate_smoke_emissions(   dt, julday, nlcat, EFs_map, fre_in,             &
-                                             ebb_dcycle, area, 1, ktau,                      &
-                                             1,ebu,num_e_bb_in,                              &
-                                             ids, ide, jds, jde, kds, kde,                   &
-                                             ims, ime, jms, jme, kms, kme,                   &
-                                             its, ite, jts, jte, kts, kte)
+      !JR sts
+      !if ( calc_bb_emis_online ) then
+      if (ebb_dcycle == 2) then
+      !JR ends        
 
-         endif
-      else ! i
-         if (ktau==1) then
-           do nv=1,num_e_bb_in
-           do j=jts,jte
-           do i=its,ite
-           
-             ebu(i,kts,j,nv)= e_bb_in(i,kts,j,nv)
-             do k=kts+1,kte
-              ebu(i,k,j,nv)= 0._RKIND
+         call mpas_log_write( &
+              ' Calling online wildfire smoke emissions ')
+
+         ! Initialize
+         ebu = 0.0_RKIND
+
+         ! fmc_avg is not used by the current emission-factor calculation.
+         fmc_dummy = 0.0_RKIND
+
+         ! diurnal distribution in flaming fraction is disabled.
+         call compute_emission_factors(                             &
+              EFs_map_work, landusef, bb_beta,                       &
+              eco_id, efs_smold, efs_flam, efs_rsmold,             &
+              fmc_dummy, mavail,                                    &
+              .false., nlcat, dt, gmt, xlong,                       &
+              ids, ide, jds, jde, kds, kde,                         &
+              ims, ime, jms, jme, kms, kme,                         &
+              its, ite, jts, jte, kts, kte                          )
+
+         ! Convert the current hourly FRE field into a surface
+         ! smoke_fine emission flux with units of ug m-2 s-1.
+         call calculate_smoke_emissions(                       &
+              dt, julday, nlcat, EFs_map_work,                      &
+              fre_in, area, ktau, bb_input_prevh,                   &
+              ebu(:,:,:,index_e_bb_in_smoke_fine),                  &
+              ids, ide, jds, jde, kds, kde,                         &
+              ims, ime, jms, jme, kms, kme,                         &
+              its, ite, jts, jte, kts, kte                          )
+      !JR sts
+      else if (ebb_dcycle == 3) then
+
+           write(*,*) 'ERROR: ebb_dcycle = 3 is not available in this release.'
+           stop 1
+      !JR ends     
+      else
+
+         ! Existing offline biomass-burning emission pathway.
+         if ( ktau == 1 ) then
+           do nv = 1, num_e_bb_in
+             do j = jts, jte
+               do i = its, ite
+                 ebu(i,kts,j,nv) = e_bb_in(i,kts,j,nv)
+                 do k = kts + 1, kte
+                   ebu(i,k,j,nv) = 0.0_RKIND
+                 enddo
+               enddo
              enddo
            enddo
-           enddo
-           enddo
          else
-           do nv=1,num_e_bb_in
-           do j=jts,jte
-           do k=kts,kte
-           do i=its,ite
-           ! ebu is divided by coef_bb_dc since it is applied in the output
-             ebu(i,k,j,nv) = e_bb_out(i,k,j,nv) / MAX(1.E-4_RKIND,coef_bb_dc(i,j))
+           do nv = 1, num_e_bb_in
+             do j = jts, jte
+               do k = kts, kte
+                 do i = its, ite
+                    ! coef_bb_dc is applied again when e_bb_out is written.
+                    ebu(i,k,j,nv) = e_bb_out(i,k,j,nv) /          &
+                         max(1.0e-4_RKIND, coef_bb_dc(i,j))
+                 enddo
+               enddo
+             enddo
            enddo
-           enddo
-           enddo
-           enddo
-         endif ! ktau = 1
-      endif ! calc emis_online
+         endif
+      endif
+      ! Compute the fire heat flux.
+      if ( add_fire_heat_flux ) then
+         do j = jts, jte
+            do i = its, ite
+               if ( coef_bb_dc(i,j) * frp_in(i,j) >= 1.0e7_RKIND ) then
+                  hfx_bb(i,j) = min(                                &
+                       max(0.0_RKIND,                               &
+                           0.88_RKIND * coef_bb_dc(i,j) *            &
+                           frp_in(i,j) / 0.55_RKIND / area(i,j)),    &
+                       5000.0_RKIND)
 
-  ! Compute the heat/moisture fluxes
-    if ( add_fire_heat_flux ) then
-     do j = jts,jte
-     do i = its,ite
-       if ( coef_bb_dc(i,j)*frp_in(i,j) .ge. 1.E7_RKIND ) then
-          hfx_bb(i,j)           = min(max(0._RKIND,0.88_RKIND * coef_bb_dc(i,j)*frp_in(i,j) / &
-                                  0.55_RKIND / area(i,j)) ,5000._RKIND) ! W m-2 [0 - 10,000]
-          frac_grid_burned(i,j) = min(max(0._RKIND, 1.3_RKIND * 0.0006_RKIND * &
-                                  coef_bb_dc(i,j)*frp_in(i,j)/area(i,j) ), &
-                                  1._RKIND)
-       else
-          hfx_bb(i,j)           = 0._RKIND
-          frac_grid_burned(i,j) = 0._RKIND
-       endif
-     enddo
-     enddo
-    endif
-   ! JLS, input emissions or scale?
-    if (add_fire_moist_flux) then
-      do j = jts,jte
-      do i = its,ite
-        if ( coef_bb_dc(i,j)*frp_in(i,j) .ge. 1.E7_RKIND ) then
-           qfx_bb(i,j)           = 0._RKIND
-        else
-           qfx_bb(i,j)           = 0._RKIND
-        endif
-      enddo
-      enddo
-    endif
+                  frac_grid_burned(i,j) = min(                       &
+                       max(0.0_RKIND,                               &
+                           1.3_RKIND * 0.0006_RKIND *                &
+                           coef_bb_dc(i,j) * frp_in(i,j) /           &
+                           area(i,j)),                               &
+                       1.0_RKIND)
+               else
+                  hfx_bb(i,j) = 0.0_RKIND
+                  frac_grid_burned(i,j) = 0.0_RKIND
+               endif
+            enddo
+         enddo
+      endif
 
-    if ( ebb_dcycle .eq. 2 ) then
-       call  diurnal_cycle (  dt,dz8w,rho_phy,pi,ebb_min,              &
-                              chem,num_chem,julday,gmt,xlat,xlong,     &
-                              fire_end_hr,peak_hr,curr_secs,coef_bb_dc,&
-                              fire_hist,hwp,hwp_avg,hwp_day_avg,       &  !I think fire_hist replaced sc_factor
-                              vegfrac, eco_id, nblocks,                &
-                              lu_nofire, lu_qfire, lu_sfire,           &
-                              swdown,ebb_dcycle,ebu,num_e_bb_in,       &
-                              index_e_bb_in_smoke_fine,                &
-                              fire_type, qv, add_fire_moist_flux,      &
-                              bb_qv_scale_factor, hwp_alpha,           &
-                              ids,ide, jds,jde, kds,kde,               &
-                              ims,ime, jms,jme, kms,kme,               &
-                              its,ite, jts,jte, kts,kte                )
-    endif
-
+      ! The current fire-moisture-flux implementation remains inactive.
+      if ( add_fire_moist_flux ) then
+         do j = jts, jte
+            do i = its, ite
+               qfx_bb(i,j) = 0.0_RKIND
+            enddo
+         enddo
+      endif
     ! Apply the diurnal cycle coefficient to frp_out ()
     do j=jts,jte
     do i=its,ite
@@ -736,10 +742,11 @@ contains
                         julday,gmt,xlat,xlong,                        &
                         fire_end_hr, peak_hr,curr_secs,               &
                         coef_bb_dc,fire_hist,hwp,hwp_day_avg,         &
-                        swdown,ebb_dcycle,ebu,num_e_bb_in,            &
+                        swdown,ebb_dcycle,run_mode,ebu,num_e_bb_in,   & !JR added run_mode
                         fire_type,                                    &
                         qv, add_fire_moist_flux,                      &
-                        bb_emis_scale_factor, aod3d_smoke,            &
+                        do_mpas_sna,                                  &
+                        bb_emis_scale_factor,                         &
                         index_e_bb_in_smoke_ultrafine,                &
                         index_e_bb_in_smoke_fine,                     &
                         index_e_bb_in_smoke_coarse,                   &
@@ -975,6 +982,75 @@ contains
     if  (do_timing) call mpas_timer_stop('wetdep_ls')
     endif
 
+    
+
+    if (do_mpas_smoke) then
+    ! UPP/MPASSIT expects FRP in MW
+    do j=jts,jte
+    do i=its,ite
+       if ( fire_type(i,j) .eq. 4 ) then ! only apply scaling factor to wildfires
+          frp_out(i,j) = 1.e-6_RKIND * min(bb_emis_scale_factor*frp_in(i,j)*coef_bb_dc(i,j),frp_max)
+       else
+          frp_out(i,j) = 1.e-6_RKIND * min(frp_in(i,j)*coef_bb_dc(i,j),frp_max)
+       endif
+    enddo
+    enddo
+    ! Assign the coef to the emissions on the way out
+    do nv=1,num_e_bb_in
+    do j=jts,jte
+    do k=kts,kte
+    do i=its,ite
+          e_bb_out(i,k,j,nv)=ebu(i,k,j,nv) * coef_bb_dc(i,j)
+    enddo
+    enddo
+    enddo
+    enddo
+    endif
+
+    if (do_mpas_sna) then
+      call mpas_log_write('Calling SNA driver')
+      call mpas_smoke_tactic_sna_driver( &
+           ktau, dt, chem, num_chem,     &
+           relhum, t_phy, dz8w, rho_phy, &
+!           nifa, nwfa,         &
+           nifa, nwfa, hno3_bkgd,        &
+           swdown, coszen,               &
+           ids, ide, jds, jde, kds, kde, &
+           ims, ime, jms, jme, kms, kme, &
+           its, ite, jts, jte, kts, kte)
+    endif
+
+    ! Simple SOA scheme, 1 = total SOA only, 2 = BB-SOA, Anthropogenic-SOA
+    !Minsu Choi CIRES/NOAA GSL
+    if (config_soa_scheme > 0) then
+       if (do_timing) call mpas_timer_start('soa_driver')
+       select case (config_soa_scheme)
+       case (1)
+         call mpas_log_write('Calling simple SOA driver: Total SOA only')
+         call simple_soa(dt, chem, num_chem, swdown, coszen, &
+              p_co, p_soa,                                  &
+              ids, ide, jds, jde, kds, kde,                 &
+              ims, ime, jms, jme, kms, kme,                 &
+              its, ite, jts, jte, kts, kte                  )
+       case (2)
+         call mpas_log_write('Calling simple SOA driver: BB-SOA, Ant-SOA')
+         call simple_soa_voc(dt, chem, num_chem, swdown, coszen, &
+              rho_phy, dz8w,                                      &
+              ebu(:,:,:,index_e_bb_in_co),                        &
+              e_ant_out(:,:,:,index_e_ant_out_co),                &               
+              p_bbvoc, p_antvoc,                                  &
+              p_bbsoa, p_antsoa,                                  &
+              ids, ide, jds, jde, kds, kde,                       &
+              ims, ime, jms, jme, kms, kme,                       &
+              its, ite, jts, jte, kts, kte                              )
+       case default
+          call mpas_log_write('WARNING: unknown config_soa_scheme. SOA driver skipped.', &
+                              messageType=MPAS_LOG_WARN)
+       end select
+       if (do_timing) call mpas_timer_stop('soa_driver')
+    
+    endif
+    
 ! Adding aerosol optics tstep
     do_mie   = (config_mie_aod_opt > 0)
     call_mie = do_mie .and. (mie_frq > 0)
@@ -1031,6 +1107,19 @@ contains
                     ids,ide, jds,jde, kds,kde,                     &
                     ims,ime, jms,jme, kms,kme,                     &
                     its,ite, jts,jte, kts,kte )
+
+      if (mod(int(curr_secs),3600) == 0) then
+        write(0,'(A,F12.1,A,ES12.4)')     &
+        'MIE_DEBUG time_s=', curr_secs,   &
+        ' local_max_ext=',        &
+        maxval(extaersw(its:ite,kts:kte,jts:jte,10)),&
+        ' local_max_gaer_=',        &
+        maxval(asyaer_sw_p(its:ite,kts:kte,jts:jte,10)),&
+        ' local_max_waer=',        &
+        maxval(ssaaer_sw_p(its:ite,kts:kte,jts:jte,10)),&
+        ' local_max_bscoef=',        &
+        maxval(bscoefsw(its:ite,kts:kte,jts:jte,10))
+      endif
       
       deallocate(tauaersw)
       deallocate(extaersw)
@@ -1057,68 +1146,13 @@ contains
                                   ids,ide, jds,jde, kds,kde,        &
                                   ims,ime, jms,jme, kms,kme,        &
                                   its,ite, jts,jte, kts,kte         )
-    
 
-    if (do_mpas_smoke) then
-    ! UPP/MPASSIT expects FRP in MW
-    do j=jts,jte
-    do i=its,ite
-       if ( fire_type(i,j) .eq. 4 ) then ! only apply scaling factor to wildfires
-          frp_out(i,j) = 1.e-6_RKIND * min(bb_emis_scale_factor*frp_in(i,j)*coef_bb_dc(i,j),frp_max)
-       else
-          frp_out(i,j) = 1.e-6_RKIND * min(frp_in(i,j)*coef_bb_dc(i,j),frp_max)
-       endif
-    enddo
-    enddo
-    ! Assign the coef to the emissions on the way out
-    do nv=1,num_e_bb_in
-    do j=jts,jte
-    do k=kts,kte
-    do i=its,ite
-          e_bb_out(i,k,j,nv)=ebu(i,k,j,nv) * coef_bb_dc(i,j)
-    enddo
-    enddo
-    enddo
-    enddo
-    endif
-
-    ! Simple SOA scheme, 1 = total SOA only, 2 = BB-SOA, Anthropogenic-SOA
-    !Minsu Choi CIRES/NOAA GSL
-    if (config_soa_scheme > 0) then
-       if (do_timing) call mpas_timer_start('soa_driver')
-       select case (config_soa_scheme)
-       case (1)
-         call mpas_log_write('Calling simple SOA driver: Total SOA only')
-         call simple_soa(dt, chem, num_chem, swdown, coszen, &
-              p_co, p_soa,                                  &
-              ids, ide, jds, jde, kds, kde,                 &
-              ims, ime, jms, jme, kms, kme,                 &
-              its, ite, jts, jte, kts, kte                  )
-       case (2)
-         call mpas_log_write('Calling simple SOA driver: BB-SOA, Ant-SOA')
-         call simple_soa_voc(dt, chem, num_chem, swdown, coszen, &
-              rho_phy, dz8w,                                      &
-              ebu(:,:,:,index_e_bb_in_co),                        &
-              e_ant_out(:,:,:,index_e_ant_out_co),                &               
-              p_bbvoc, p_antvoc,                                  &
-              p_bbsoa, p_antsoa,                                  &
-              ids, ide, jds, jde, kds, kde,                       &
-              ims, ime, jms, jme, kms, kme,                       &
-              its, ite, jts, jte, kts, kte                              )
-       case default
-          call mpas_log_write('WARNING: unknown config_soa_scheme. SOA driver skipped.', &
-                              messageType=MPAS_LOG_WARN)
-       end select
-       if (do_timing) call mpas_timer_stop('soa_driver')
-    
-    endif
-    
  end subroutine mpas_smoke_driver
 
  subroutine mpas_smoke_prep(                                                &
         do_mpas_smoke,                                                      &
-        ktau, nlcat,cp,ebb_dcycle,ebb_min,                                  &
-        xland,xlat,xlong,ivgtyp,isltyp,vegfrac,                             &
+        ktau, nlcat,cp,ebb_dcycle,run_mode,ebb_min,                         & !JR added run_mode
+        xland,xlat,xlong,ivgtyp,isltyp,landusef,                             &
         snowh,u10,v10,wind10m,t2m,dpt2m,wetness,hwp,hwp_day_avg,            &
         hwp_method, totprcp_prev24, swdown, hpbl2d, curr_secs,               & ! SRB: added for HWP calcs
         windgustpot, uspdavg2d,                                             & !SRB
@@ -1138,12 +1172,12 @@ contains
                          ims,ime,jms,jme,kms,kme,                           &
                          its,ite,jts,jte,kts,kte
 
-    integer,intent(in)     :: ktau, nlcat,ebb_dcycle,                       &
+    integer,intent(in)     :: ktau, nlcat,ebb_dcycle,run_mode,              & !JR added run_mode
                               kfire, num_e_bb_in, index_e_bb_in_smoke_fine
     logical,intent(in)     :: do_mpas_smoke
     real(RKIND),intent(in) :: cp, ebb_min
     integer,intent(in), dimension(ims:ime, jms:jme) :: isltyp, ivgtyp
-    real(RKIND),intent(in),   dimension(ims:ime, nlcat, jms:jme) :: vegfrac
+    real(RKIND),intent(in),   dimension(ims:ime, nlcat, jms:jme) :: landusef
 
     real(RKIND),intent(in),   dimension(ims:ime, jms:jme) :: xland, xlat, xlong,                   &
                                         snowh, u10, v10, t2m, dpt2m, wetness
@@ -1272,7 +1306,10 @@ contains
     if (do_mpas_smoke) then
       !RAR: change this to the fractional LU type; fire_type: 0- no fires, 1- Ag
       ! or urban fires, 2- prescribed fires in wooded area, 3- wildfires
-       if (ebb_dcycle==2) then
+      !JR sts
+       !if (ebb_dcycle==2) then
+       if ((ebb_dcycle == 2 .or. ebb_dcycle == 3) .and. run_mode == 2) then
+       !JR ends
          do j=jts,jte
          do i=its,ite
            if (e_bb_in(i,1,j,index_e_bb_in_smoke_fine)<ebb_min) then
@@ -1280,12 +1317,12 @@ contains
               lu_nofire(i,j) = 1.0
            else
              ! Permanent wetlands, snow/ice, water, barren tundra:
-             lu_nofire(i,j)= vegfrac(i,11,j) + vegfrac(i,15,j) + vegfrac(i,17,j) + vegfrac(i,20,j)
+             lu_nofire(i,j)= landusef(i,11,j) + landusef(i,15,j) + landusef(i,17,j) + landusef(i,20,j)
              ! cropland, urban, cropland/natural mosaic, barren and sparsely
              ! vegetated and non-vegetation areas:
-             lu_qfire(i,j) = lu_nofire(i,j) + vegfrac(i,12,j) + vegfrac(i,13,j) + vegfrac(i,14,j) + vegfrac(i,16,j)
+             lu_qfire(i,j) = lu_nofire(i,j) + landusef(i,12,j) + landusef(i,13,j) + landusef(i,14,j) + landusef(i,16,j)
              ! Savannas and grassland fires, these fires last longer than the Ag fires:
-             lu_sfire(i,j) = lu_qfire(i,j) + vegfrac(i,8,j) + vegfrac(i,9,j) + vegfrac(i,10,j)
+             lu_sfire(i,j) = lu_qfire(i,j) + landusef(i,8,j) + landusef(i,9,j) + landusef(i,10,j)
              if (lu_nofire(i,j)>0.95) then ! no fires
                fire_type(i,j) = 0
              else if (lu_qfire(i,j)>0.9) then   ! Ag. and urban fires
@@ -1346,7 +1383,7 @@ contains
        do i=its, ite
        do j=jts, jte
          if (xland(i,j) .eq. 0) then
-            wet_fact=vegfrac(i,17,j)
+            wet_fact=landusef(i,17,j)
          else
             wet_fact=1._RKIND
          endif
@@ -1357,7 +1394,10 @@ contains
          SELECT CASE (hwp_method)
          CASE(1)
            ! SRB: HWP calculation used in RRFSv1
-           if (ebb_dcycle .eq. 2) then
+           !JR sts
+           !if (ebb_dcycle .eq. 2) then
+           if ((ebb_dcycle == 2 .or. ebb_dcycle == 3) .and. run_mode == 2) then
+           !JR ends        
               precip_tot = totprcp(i,j)+totprcp_prev24(i,j)
            else
               precip_tot = totprcp(i,j)

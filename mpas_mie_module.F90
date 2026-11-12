@@ -190,10 +190,14 @@ CONTAINS
       dens_unspc = 1.0 ! WRF-Chem, approximate average from aerosols (api,ole,aro,oc)
  
       sginin = 2.0
+!      sginia = 1.7
       sginia = 2.0
+!      sginia = 2.3
       sginic = 2.2
  
+!      dg_f_cm = 0.15E-4
       dg_f_cm = 0.2E-4
+!      dg_f_cm = 0.4E-4
       dg_c_cm = 2.0E-4
  
       dlo_tmp = dlo_um

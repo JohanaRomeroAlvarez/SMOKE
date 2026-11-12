@@ -17,8 +17,8 @@ OBJS = \
 	module_wetdep_ls.o \
 	module_zero_plumegen_coms.o \
 	module_smoke_plumerise.o \
-	module_add_emiss_burn.o \
-	module_plumerise.o \
+        module_fire_emissions.o \
+        module_plumerise.o \
 	dust_data_mod.o \
 	dust_fengsha_mod.o \
 	dust_gocart_simple_mod.o \
@@ -28,7 +28,6 @@ OBJS = \
 	seas_ngac_mod.o \
 	seas_data_mod.o \
 	module_smoke_diagnostics.o \
-	module_fire_emissions.o \
         pollen_mod.o \
         module_anthro_emissions.o \
         module_anthro_pt_emissions.o \
@@ -83,10 +82,14 @@ dust_fengsha_mod.o: \
 	dust_data_mod.o \
 	mpas_smoke_init.o
 
-dust_gocart_simple.o: \
-	mpas_smoke_config.o \
-	dust_data_mod.o \
-	mpas_smoke_init.o
+#dust_gocart_simple.o: \
+#	mpas_smoke_config.o \
+#	dust_data_mod.o \
+#	mpas_smoke_init.o
+dust_gocart_simple_mod.o: \
+        mpas_smoke_config.o \
+        dust_data_mod.o \
+        mpas_smoke_init.o	
 
 dust_data_mod.o: \
 	mpas_smoke_init.o
@@ -107,10 +110,6 @@ module_wetdep_ls.o: \
 	mpas_smoke_init.o \
 	dep_data_mod.o
 
-module_add_emiss_burn.o: \
-	mpas_smoke_config.o \
-	mpas_smoke_init.o
-
 module_smoke_plumerise.o:  \
 	module_zero_plumegen_coms.o
 
@@ -121,7 +120,8 @@ module_plumerise.o: \
 
 mpas_smoke_wrapper.o:      \
         mpas_smoke_config.o \
-        module_add_emiss_burn.o \
+	mpas_smoke_init.o \
+	module_fire_emissions.o \
         module_plumerise.o \
         module_wetdep_ls.o \
         dep_dry_simple_mod.o \
