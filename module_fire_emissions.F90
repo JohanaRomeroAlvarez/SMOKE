@@ -29,10 +29,10 @@ module module_fire_emissions
 
    public :: compute_emission_factors
    public :: compute_gas_emission_factors
-   public :: calculate_smoke_emissions             !JR -> research
-   public :: calculate_smoke_emissions_fcst        !JR -> fcst
-   public :: calculate_gas_emissions               !JR -> research
-   public :: calculate_gas_emissions_fcst          !JR -> fcst 
+   public :: calculate_smoke_emissions_research
+   public :: calculate_smoke_emissions_fcst
+   public :: calculate_gas_emissions_research
+   public :: calculate_gas_emissions_fcst
    public :: add_emis_burn
 
    public :: num_fire_gas
@@ -264,7 +264,7 @@ contains
    ! Convert the current hourly FRE field to a surface smoke_fine flux.
    ! The resulting ebu has units of micrograms m-2 s-1 and is placed at kts.
    !--------------------------------------------------------------------------
-   subroutine calculate_smoke_emissions(dt, julday, nlcat, EFs_map,       &
+   subroutine calculate_smoke_emissions_research(dt, julday, nlcat, EFs_map,       &
                                              fre_in, area, ktau,               &
                                              bb_input_prevh, ebu,              &
                                              ids, ide, jds, jde, kds, kde,     &
@@ -288,11 +288,11 @@ contains
                                   ims, ime, jms, jme, kms, kme,                &
                                   its, ite, jts, jte, kts)
 
-   end subroutine calculate_smoke_emissions
+   end subroutine calculate_smoke_emissions_research
 
 
    !--------------------------------------------------------------------------
-   ! FCST
+   ! EBB2
    ! Select the current FRE time block and convert it to a surface smoke_fine
    ! flux. The resulting ebu has units of micrograms m-2 s-1 at kts.
    !--------------------------------------------------------------------------
@@ -331,7 +331,7 @@ contains
    ! EBB1 gas emissions.
    ! Convert current-hour FRE to mol m-2 s-1 for the supported gas species.
    !--------------------------------------------------------------------------
-   subroutine calculate_gas_emissions(dt, julday, gas_EFs_map, fre_in,   &
+   subroutine calculate_gas_emissions_research(dt, julday, gas_EFs_map, fre_in,   &
                                            area, ktau, bb_input_prevh,        &
                                            ebu, num_e_bb_in, gas_ebu_index,   &
                                            ids, ide, jds, jde, kds, kde,      &
@@ -358,11 +358,11 @@ contains
                                 ims, ime, jms, jme, kms, kme,                 &
                                 its, ite, jts, jte, kts)
 
-   end subroutine calculate_gas_emissions
+   end subroutine calculate_gas_emissions_research
 
 
    !--------------------------------------------------------------------------
-   ! FCST gas emissions. This follows the existing PM2.5 block selection.
+   ! EBB2 gas emissions. This follows the existing PM2.5 block selection.
    !--------------------------------------------------------------------------
    subroutine calculate_gas_emissions_fcst(dt, julday, gas_EFs_map, fre_avg, &
                                            area, nblocks, ktau,               &
@@ -719,7 +719,7 @@ contains
          flam_frac = get_flam_frac(base_flam_frac, gmt, xlong)
       else
          flam_frac = base_flam_frac
-      end if
+      endif
 
       smold_frac = 1.0_RKIND - flam_frac
       ef = flam_frac * ef_flam + smold_frac * ef_smold
@@ -812,7 +812,7 @@ contains
 
 
    !--------------------------------------------------------------------------
-   ! Select the FCTS time block from elapsed model time.
+   ! Select the EBB2 time block from elapsed model time.
    !--------------------------------------------------------------------------
    integer function get_fre_block(ktau, dt, bb_input_prevh, nblocks) result(blk)
 
@@ -862,46 +862,42 @@ contains
       implicit none
 
       real(RKIND), intent(in) :: base_flam_frac, gmt, xlong
-      ! ------------------------------------------------------------------
+      ! -----------------------------------------------------------
       ! future namelist options
       ! ef_peak_local_hour
       ! ef_diurnal_amplitude
       ! ef_percent_change
       ! ef_flam_floor
       ! ef_flam_ceiling
-      ! ------------------------------------------------------------------
+      ! ------------------------------------------------------- 
 
-      real(RKIND), parameter :: PI = 3.14159265358979323846_RKIND
+      real(RKIND), parameter :: PI = 3.1415_RKIND
       real(RKIND), parameter :: EF_PEAK_LOCAL_HOUR = 15.0_RKIND
       real(RKIND), parameter :: EF_DIURNAL_AMPLITUDE = 0.20_RKIND
       real(RKIND), parameter :: EF_PERCENT_CHANGE    = 0.0_RKIND
-
       real(RKIND), parameter :: EF_FLAM_FLOOR   = 0.05_RKIND
       real(RKIND), parameter :: EF_FLAM_CEILING = 0.98_RKIND
 
       real(RKIND) :: local_hour, phase, adjusted_base
 
       local_hour = get_local_hour(gmt, xlong)
-
       ! Apply a relative percentage adjustment to the original
       ! vegetation-dependent flaming fraction
       adjusted_base = base_flam_frac * &
-                   (1.0_RKIND + EF_PERCENT_CHANGE / 100.0_RKIND)
+                    (1.0_RKIND + EF_PERCENT_CHANGE / 100.0_RKIND)
       adjusted_base = min(max(adjusted_base, EF_FLAM_FLOOR), &
-                       EF_FLAM_CEILING)
-      
-      ! Smooth 24-hour cycle, maximum at EF_PEAK_LOCAL_HOUR.
+                     EF_FLAM_CEILING)
+
+       ! Smooth 24-hour cycle, maximum at EF_PEAK_LOCAL_HOUR.
       phase = cos(2.0_RKIND * PI * &
                   (local_hour - EF_PEAK_LOCAL_HOUR) / 24.0_RKIND)
-
-       ! Apply the diurnal perturbation.
-      flam_frac = adjusted_base + EF_DIURNAL_AMPLITUDE * phase    
-
-      !flam_frac = base_flam_frac + EF_DIURNAL_AMPLITUDE * phase
+         
+      ! Apply the diurnal perturbation.    
+      !flam_frac = base_flam_frac + AMPLITUDE * phase
       !flam_frac = min(max(flam_frac, FLAM_MIN), FLAM_MAX)
+      flam_frac = adjusted_base + EF_DIURNAL_AMPLITUDE * phase
       flam_frac = min(max(flam_frac, EF_FLAM_FLOOR), &
-                   EF_FLAM_CEILING)
-
+              EF_FLAM_CEILING)
    end function get_flam_frac
 
 
@@ -912,7 +908,7 @@ contains
                             chem, num_chem, julday, gmt, xlat, xlong,         &
                             fire_end_hr, peak_hr, time_int,                   &
                             coef_bb_dc, fire_hist, hwp, hwp_prevd,            &
-                            swdown, ebb_dcycle, run_mode,ebu, num_e_bb_in,    & !JR added run_mode
+                            swdown, ebb_dcycle, EBB, ebu, num_e_bb_in,        &
                             fire_type, q_vap, add_fire_moist_flux,            &
                             do_mpas_sna,                                      &
                             sc_factor,                                        &
@@ -964,9 +960,7 @@ contains
       real(RKIND), intent(in) :: time_int, pi, ebb_min
       real(RKIND), intent(in) :: sc_factor
       integer, intent(in) :: ebb_dcycle
-      !JR sts
-      integer, intent(in) :: run_mode
-      !JR ends
+      integer, intent(in) :: EBB
       logical, intent(in) :: add_fire_moist_flux, do_mpas_sna
 
       logical :: do_bb_sna_speciation
@@ -1005,19 +999,16 @@ contains
 
                if (ebu(i,k,j,index_e_bb_in_smoke_fine) < ebb_min) cycle
 
-               !JR sts
-               if (ebb_dcycle == 1 .or. ebb_dcycle == -1 .or. &
-                  ebb_dcycle == 2 .or. ebb_dcycle == 3) then
-               !JR ends   
+               !JR st --> ebb_dcycle=2 no longer exists
+               if (ebb_dcycle == 1 .or. ebb_dcycle == -1) then
+               
                   conv = dtstep / (rho_phy(i,k,j) * dz8w(i,k,j))
                   conv_gas = dtstep * 0.02897_RKIND /                    &
                              (rho_phy(i,k,j) * dz8w(i,k,j))
-               !JR sts      
+               !JR st      
                !else if (ebb_dcycle == 2) then
-               else if (ebb_dcycle == 2 .or. ebb_dcycle == 3 .and. &
-                       run_mode == 2) then
-               !JR ends
-
+               elseif (ebb_dcycle == -1 .and. (EBB == 2 .or. EBB == 3)) then
+               !JR ends        
                   conv = coef_bb_dc(i,j) * dtstep /                      &
                          (rho_phy(i,k,j) * dz8w(i,k,j))
                   conv_gas = coef_bb_dc(i,j) * dtstep * 0.02897_RKIND /  &

@@ -13,7 +13,8 @@ module mpas_smoke_wrapper
    use module_plumerise,      only : ebu_driver
    ! Testing emission module, Minsu Choi
    use module_fire_emissions, only : compute_emission_factors,          &
-                                     calculate_smoke_emissions,         &
+                                     calculate_smoke_emissions_research,    &
+                                     calculate_smoke_emissions_fcst,    &
                                      add_emis_burn
 !   use module_add_emiss_burn, only : add_emis_burn
    use dep_dry_simple_mod,    only : dry_dep_driver_simple
@@ -118,11 +119,10 @@ contains
            do_mpas_sna           , do_mpas_soa           , do_mpas_methane       ,           &
            do_mpas_hab           , do_mpas_carbon_aero   ,                                   &
            do_mpas_rwc           , do_mpas_anthro_pt     ,                                   &
-           calc_bb_emis_online   , bb_beta               ,                                   &
+           calc_bb_emis_online   , bb_beta               ,  EBB                 ,            &!JR added EBB
            hwp_method            , hwp_alpha             , wetdep_ls_opt        ,            &
            wetdep_ls_alpha       , plumerise_opt         , plume_wind_eff       ,            &
            plume_alpha           , bb_emis_scale_factor, ebb_dcycle             ,            &
-           run_mode,                                                                         &
            drydep_opt            , pm_settling           , add_fire_heat_flux   ,            &
            add_fire_moist_flux   , plumerisefire_frq     , bb_qv_scale_factor   ,            &
            dust_opt              ,                                                           &
@@ -255,7 +255,7 @@ contains
                            index_polp_tree,  index_polp_grass,   index_polp_weed,   &
                            index_pols_tree,  index_pols_grass,   index_pols_weed,   &
                            index_pols_all,   index_polp_all,                        &
-                           index_unspc_ultrafine, index_unspc_fine, index_unspc_coarse,                    &
+                           index_unspc_ultrafine, index_unspc_fine, index_unspc_coarse,             &
                            index_ssalt_fine, index_ssalt_coarse,                    &
                            index_so4_a_fine, index_no3_a_fine, index_nh4_a_fine,    &
                            index_so2, index_nh3, index_ch4,                         &
@@ -366,7 +366,9 @@ contains
      real(kind=RKIND),intent(in)      :: anthro_emis_scale_factor
      real(kind=RKIND),intent(in)      :: anthro_pt_emis_scale_factor
      integer,intent(in)               :: ebb_dcycle
-     integer,intent(in)               :: run_mode !JR added
+     !JR st
+     integer,intent(in)               :: EBB
+     !JR ends
      integer,intent(in)               :: drydep_opt
      integer,intent(in)               :: pm_settling
      logical,intent(in)               :: add_fire_heat_flux
@@ -533,7 +535,7 @@ contains
     !>- get ready for chemistry run
     call mpas_smoke_prep(                                                   &
         do_mpas_smoke,                                                      &
-        ktau, nlcat,cp,ebb_dcycle,run_mode,ebb_min,                         & !JR added run_mode
+        ktau, nlcat,cp,ebb_dcycle,EBB,ebb_min,                              & !JR added EBB
         xland,xlat,xlong,ivgtyp,isltyp,landusef,                            & ! JLS TODO LANDUSEF /= VEGFRA?
         snowh,u10,v10,wind10m,t2m,dpt2m,mavail,hwp,hwp_day_avg,             &
         hwp_method, totprcp_prev24, swdown, hpbl2d, curr_secs,               & ! SRB: added for HWP calcs 
@@ -591,13 +593,14 @@ contains
 
         
    if ( do_mpas_smoke ) then
-      !JR sts
+
+      !JR st     
       !if ( calc_bb_emis_online ) then
-      if (ebb_dcycle == 2) then
-      !JR ends        
+      if (EBB == 2 .or. EBB == 3 .or. (EBB == 1 .and. calc_bb_emis_online)) then
+      !JR eds
 
          call mpas_log_write( &
-              ' Calling online wildfire smoke emissions ')
+              ' Calling online EBB1 wildfire smoke emissions ')
 
          ! Initialize
          ebu = 0.0_RKIND
@@ -605,34 +608,69 @@ contains
          ! fmc_avg is not used by the current emission-factor calculation.
          fmc_dummy = 0.0_RKIND
 
-         ! diurnal distribution in flaming fraction is disabled.
-         call compute_emission_factors(                             &
-              EFs_map_work, landusef, bb_beta,                       &
-              eco_id, efs_smold, efs_flam, efs_rsmold,             &
-              fmc_dummy, mavail,                                    &
-              .false., nlcat, dt, gmt, xlong,                       &
-              ids, ide, jds, jde, kds, kde,                         &
-              ims, ime, jms, jme, kms, kme,                         &
-              its, ite, jts, jte, kts, kte                          )
+         !JR st
+         !EBB1: existing online FRE calculation
+         !Diurnal flaming/smoldering partition is always OFF
+         if (EBB == 1) then
+                 call compute_emission_factors(                        &
+                      EFs_map_work, landusef, bb_beta,                 &
+                      eco_id, efs_smold, efs_flam, efs_rsmold,         &
+                      fmc_dummy, mavail,                               &
+                      .false., nlcat, dt, gmt, xlong,                  &
+                      ids, ide, jds, jde, kds, kde,                    &
+                      ims, ime, jms, jme, kms, kme,                    &
+                      its, ite, jts, jte, kts, kte )
+         
+         !EBB2: future diurnal flaming/smoldering EF method
+         !current ef_diurnal_opt = .false. -> get_flam_frac NOT active       
+         else if (EBB == 2) then 
+            call compute_emission_factors(                        &
+                 EFs_map_work, landusef, bb_beta,                 &
+                 eco_id, efs_smold, efs_flam, efs_rsmold,         &
+                 fmc_dummy, mavail,                               &
+                 .false., nlcat, dt, gmt, xlong,                  &
+                 ids, ide, jds, jde, kds, kde,                    &
+                 ims, ime, jms, jme, kms, kme,                    &
+                 its, ite, jts, jte, kts, kte )
 
-         ! Convert the current hourly FRE field into a surface
-         ! smoke_fine emission flux with units of ug m-2 s-1.
-         call calculate_smoke_emissions(                       &
-              dt, julday, nlcat, EFs_map_work,                      &
-              fre_in, area, ktau, bb_input_prevh,                   &
-              ebu(:,:,:,index_e_bb_in_smoke_fine),                  &
-              ids, ide, jds, jde, kds, kde,                         &
-              ims, ime, jms, jme, kms, kme,                         &
-              its, ite, jts, jte, kts, kte                          )
-      !JR sts
-      else if (ebb_dcycle == 3) then
+         else if (EBB == 3) then
+            write(*,*) 'ERROR: EBB=3 is reserved and not implemented'
+            stop 1
 
-           write(*,*) 'ERROR: ebb_dcycle = 3 is not available in this release.'
-           stop 1
-      !JR ends     
+         endif  
+
+         ! After computing EFs_map, convert FRE to biomass-burning emissions
+         ! ebb_dcycle =  1 --> direct/same-day FRE
+         ! ebb_dcycle = -1 with EBB2/3 --> forecast/block FRE
+         if (ebb_dcycle == -1 .and. (EBB == 2 .or. EBB == 3)) then
+
+            ! Forecast/block path
+             call calculate_smoke_emissions_fcst(                  &
+                  dt, julday, nlcat, EFs_map_work,                 &
+                  fre_avg, area, nblocks, ktau,                    &
+                  bb_input_prevh, ebu,                             &
+                  ids, ide, jds, jde, kds, kde,                   &
+                  ims, ime, jms, jme, kms, kme,                   & 
+                  its, ite, jts, jte, kts, kte )   
+         else
+             ! Used by --> EBB1 + calc_bb_emis_online=.true.
+             ! EBB2 + ebb_dcycle=1
+             ! Convert the current EBB1 hourly FRE field into a surface
+             ! smoke_fine emission flux with units of ug m-2 s-1.
+             call calculate_smoke_emissions_research(                   &
+                  dt, julday, nlcat, EFs_map_work,                      &
+                  fre_in, area, ktau,                                    &
+                  bb_input_prevh, ebu,                                &
+                  ids, ide, jds, jde, kds, kde,                   &
+                  ims, ime, jms, jme, kms, kme,                   &
+                  its, ite, jts, jte, kts, kte )
+     
+         endif  
+
+
       else
-
          ! Existing offline biomass-burning emission pathway.
+
          if ( ktau == 1 ) then
            do nv = 1, num_e_bb_in
              do j = jts, jte
@@ -734,7 +772,10 @@ contains
     if  (do_timing) call mpas_timer_stop('ebu_driver')
 
     ! -- add biomass burning emissions at every timestep
-    if (addsmoke_flag == 1) then
+    !JR st --> preventing the bb addition routine from running when EBB=0
+    !if (addsmoke_flag == 1) then
+    if (addsmoke_flag == 1 .and. EBB /= 0) then
+    !JR ends        
     if  (do_timing) call mpas_timer_start('add_emiss_burn')
      call mpas_log_write( ' Calling add_emis_burn')
      call add_emis_burn(dt,dz8w,rho_phy,pi,ebb_min,                   &
@@ -742,7 +783,7 @@ contains
                         julday,gmt,xlat,xlong,                        &
                         fire_end_hr, peak_hr,curr_secs,               &
                         coef_bb_dc,fire_hist,hwp,hwp_day_avg,         &
-                        swdown,ebb_dcycle,run_mode,ebu,num_e_bb_in,   & !JR added run_mode
+                        swdown,ebb_dcycle,EBB,ebu,num_e_bb_in,        &
                         fire_type,                                    &
                         qv, add_fire_moist_flux,                      &
                         do_mpas_sna,                                  &
@@ -1151,7 +1192,7 @@ contains
 
  subroutine mpas_smoke_prep(                                                &
         do_mpas_smoke,                                                      &
-        ktau, nlcat,cp,ebb_dcycle,run_mode,ebb_min,                         & !JR added run_mode
+        ktau, nlcat,cp,ebb_dcycle,EBB,ebb_min,                              & !JR added EBB
         xland,xlat,xlong,ivgtyp,isltyp,landusef,                             &
         snowh,u10,v10,wind10m,t2m,dpt2m,wetness,hwp,hwp_day_avg,            &
         hwp_method, totprcp_prev24, swdown, hpbl2d, curr_secs,               & ! SRB: added for HWP calcs
@@ -1172,7 +1213,7 @@ contains
                          ims,ime,jms,jme,kms,kme,                           &
                          its,ite,jts,jte,kts,kte
 
-    integer,intent(in)     :: ktau, nlcat,ebb_dcycle,run_mode,              & !JR added run_mode
+    integer,intent(in)     :: ktau, nlcat,ebb_dcycle,                       &
                               kfire, num_e_bb_in, index_e_bb_in_smoke_fine
     logical,intent(in)     :: do_mpas_smoke
     real(RKIND),intent(in) :: cp, ebb_min
@@ -1183,7 +1224,7 @@ contains
                                         snowh, u10, v10, t2m, dpt2m, wetness
     real(RKIND),intent(in),   dimension(ims:ime, jms:jme) :: swdown 
     real(RKIND),intent(in),   dimension(ims:ime, jms:jme) :: totprcp_prev24 ! SRB: added for HWP calcs
-    integer,intent(in)                                    :: hwp_method
+    integer,intent(in)                                    :: hwp_method, EBB !JR added EBB
     real(RKIND)                                           :: curr_secs 
     real(RKIND),intent(in),   dimension(ims:ime, kms:kme, jms:jme) :: qv, z_at_w,                  &
                                         p_phy, t_phy, u_phy, v_phy, pi_phy, rho_phy, dz8w
@@ -1306,10 +1347,7 @@ contains
     if (do_mpas_smoke) then
       !RAR: change this to the fractional LU type; fire_type: 0- no fires, 1- Ag
       ! or urban fires, 2- prescribed fires in wooded area, 3- wildfires
-      !JR sts
-       !if (ebb_dcycle==2) then
-       if ((ebb_dcycle == 2 .or. ebb_dcycle == 3) .and. run_mode == 2) then
-       !JR ends
+       if (ebb_dcycle==2) then
          do j=jts,jte
          do i=its,ite
            if (e_bb_in(i,1,j,index_e_bb_in_smoke_fine)<ebb_min) then
@@ -1394,9 +1432,9 @@ contains
          SELECT CASE (hwp_method)
          CASE(1)
            ! SRB: HWP calculation used in RRFSv1
-           !JR sts
+           !JR st
            !if (ebb_dcycle .eq. 2) then
-           if ((ebb_dcycle == 2 .or. ebb_dcycle == 3) .and. run_mode == 2) then
+           if (ebb_dcycle == -1 .and. (EBB == 2 .or. EBB == 3)) then
            !JR ends        
               precip_tot = totprcp(i,j)+totprcp_prev24(i,j)
            else
