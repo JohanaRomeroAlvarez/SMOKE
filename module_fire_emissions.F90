@@ -7,9 +7,51 @@ module module_fire_emissions
   
     implicit none
     private
+ 
     public :: compute_emission_factors, calculate_smoke_emissions, diurnal_cycle
   
-  
+
+    REAL(RKIND), PARAMETER :: secsperhour = 3600.0_RKIND
+    LOGICAL, PARAMETER :: use_classic_pm25_ef = .false.
+
+    !>-- Emissions factors parameters:frst,hwd,mxd,shrb,shrb_grs,grs,org_soil_mix,org_soil_woody
+    real(RKIND), dimension(8), parameter :: EF_FLM = &
+      (/19.0_RKIND, 9.4_RKIND, 14.6_RKIND, 9.3_RKIND, &
+        10.7_RKIND, 13.3_RKIND, 10.8_RKIND, 11.8_RKIND/)
+
+    real(RKIND), dimension(8), parameter :: EF_SML = &
+      (/28.0_RKIND, 37.7_RKIND, 17.6_RKIND, 36.6_RKIND, &
+        36.7_RKIND, 38.4_RKIND, 20.7_RKIND, 23.3_RKIND/)                               
+    
+    !>-- Emissions factors parameters GEUFE:IGBP 10, 12 14
+    real(RKIND), dimension(3), parameter :: EF_EAST = &
+      (/9.29_RKIND, 11.91_RKIND, 8.20_RKIND/)
+    !>-- Biomass Combustion Coefficient (Beta Factor, β)
+    real(RKIND), parameter :: BETA_WOOSTER = 0.38_RKIND
+    !>-- Biomass Combustion Coefficient: SA,SAOS,AG,AGOS,EF,EFOS,PEAT
+    real(RKIND), dimension(7), parameter :: BETA_KAISER = &
+      (/0.78_RKIND, 0.26_RKIND, 0.29_RKIND, 0.13_RKIND, &
+        0.49_RKIND, 1.55_RKIND, 5.87_RKIND/)
+
+    ! Andreae (2019) biomass-burning categories.
+    ! I remapped it as much as I can
+    integer, parameter :: cat_none      = 0
+    integer, parameter :: cat_savanna   = 1
+    integer, parameter :: cat_tropical  = 2
+    integer, parameter :: cat_temperate = 3
+    integer, parameter :: cat_boreal    = 4
+    integer, parameter :: cat_peat      = 5
+    integer, parameter :: cat_agric     = 6
+    integer, parameter :: num_fire_cat  = 6
+
+    ! Classic category-average PM2.5 emission factors in g kg-1 dry matter.
+    ! Order is savanna/grassland, tropical forest, temperate forest,
+    ! boreal forest, peat, and agricultural residue.
+    ! This is recommendation while we are doing retro test for the
+    ! New emission based on smoldering and flaming.
+    real(RKIND), dimension(num_fire_cat), parameter :: EF_PM25_CATEGORY = &
+      (/ 6.7_RKIND, 8.3_RKIND, 18.5_RKIND, 18.7_RKIND, &
+         18.9_RKIND, 8.2_RKIND /)
   contains
   
   !-------------------------------------------------------------------------------
@@ -21,7 +63,7 @@ module module_fire_emissions
   !   is used only for Canadian forest/shrubland types; otherwise, beta_wooster is applied.
   !   EF_east factors are applied to Grasslands and Croplands based on region masks.
   !-------------------------------------------------------------------------------
-    subroutine compute_emission_factors(EFs_map, vegfrac, bb_beta,                       &
+    subroutine compute_emission_factors(EFs_map, landusef, bb_beta,                      &
                                         eco_id, efs_smold, efs_flam, efs_rsmold,         &
                                         fmc_avg, wetness,                                &
                                         ef_diurnal_opt, nlcat, dt, gmt, xlong,           & !JR added xlong,ef_diurnal_opt
@@ -30,168 +72,426 @@ module module_fire_emissions
                                         its, ite, jts, jte, kts, kte)
   
       implicit none
-      LOGICAL, INTENT(IN) :: ef_diurnal_opt  !JR added xlong
-      REAL(RKIND), DIMENSION(ims:ime,jms:jme), INTENT(IN) :: xlong   !JR added xlong
-      INTEGER, INTENT(IN) :: ids, ide, jds, jde, kds, kde
-      INTEGER, INTENT(IN) :: ims, ime, jms, jme, kms, kme
-      INTEGER, INTENT(IN) :: its, ite, jts, jte, kts, kte
-      REAL(RKIND), INTENT(IN) :: dt, gmt
-      INTEGER, INTENT(IN) :: bb_beta, nlcat
-      INTEGER, INTENT(IN), DIMENSION(ims:ime,jms:jme) :: eco_id
-      REAL(RKIND), DIMENSION(ims:ime,jms:jme), INTENT(IN) :: efs_smold, efs_flam, efs_rsmold, wetness, fmc_avg
-      REAL(RKIND), INTENT(IN), DIMENSION(ims:ime, nlcat,jms:jme) :: vegfrac !TODO, check if correct way of using it
-  
-      !local variables
-      INTEGER :: i, j, n, eco
-      REAL(RKIND) :: ef, frac, beta_val, sum_frac
-  
-      !>-- Emissions factors parameters:frst,hwd,mxd,shrb,shrb_grs,grs,org_soil_mix,org_soil_woody
-      REAL(RKIND), DIMENSION(1:8), PARAMETER :: EF_FLM = (/19.0, 9.4,  14.6, 9.3,  10.7, 13.3, 10.8, 11.8/) !!PM2.5 EFs for flaming US FS
-      REAL(RKIND), DIMENSION(1:8), PARAMETER :: EF_SML = (/28.0, 37.7, 17.6, 36.6, 36.7, 38.4, 20.7, 23.3/) !PM2.5 EFs for smoldering US FS
-      !>-- Emissions factors parameters GEUFE:IGBP 10, 12 14
-      REAL(RKIND), DIMENSION(1:3), PARAMETER :: EF_east = (/9.29, 11.91, 8.20/) !!EFs eastern US GEUFE
 
-      !CHARACTER(len=25), DIMENSION(20), PARAMETER :: land_cats = (/ &
-      !                           "Evergreen_Nleaf_Frst", "Evergreen_Bleaf_Frst", "Deciduous_NleafFrst", "Deciduous_Bleaf_Frst", &
-      !                           "Mixed_Frst", "Closed_Shrublands", "Open_Shrublands", "Woody_Savannas", "Savannas", "Grasslands", &
-      !                           "Permanent_Wetlands", "Croplands", "Urban_Lands", "Cropland_NVeg", "snow_ice", "barren", &
-      !                           "water", "Wooded_Tundra", "Mixed_Tundra", "Barren_Tundra" /)
+      integer, intent(in) :: bb_beta, nlcat
+      integer, intent(in) :: ids, ide, jds, jde, kds, kde
+      integer, intent(in) :: ims, ime, jms, jme, kms, kme
+      integer, intent(in) :: its, ite, jts, jte, kts, kte
 
-      !>-- Biomass Combustion Coefficient (Beta Factor, β)
-      !>-- Biomass Combustion Coefficient: SA,SAOS,AG,AGOS,EF,EFOS,PEAT
-      REAL(RKIND), DIMENSION(1:7), PARAMETER :: beta_kaiser = (/0.78,0.26,0.29,0.13,0.49,1.55,5.87/) !Kaiser et al., 2012
-      REAL(RKIND), PARAMETER :: beta_wooster = 0.38 !! Wooster et al. 2005
-      REAL(RKIND), DIMENSION(ims:ime,jms:jme), INTENT(OUT) :: EFs_map
+      logical, intent(in) :: ef_diurnal_opt
+
+      integer, intent(in), dimension(ims:ime,jms:jme) :: eco_id
+
+      real(RKIND), intent(in) :: dt, gmt
+      real(RKIND), intent(in), dimension(ims:ime,jms:jme) :: &
+              efs_smold, efs_flam, efs_rsmold, fmc_avg, wetness, xlong
+      real(RKIND), intent(in), dimension(ims:ime,nlcat,jms:jme) :: landusef
+      real(RKIND), intent(out), dimension(ims:ime,jms:jme) :: EFs_map
+
+      integer :: i, j, n
+      real(RKIND) :: class_factor
 
       EFs_map = 0.0_RKIND
-  
-      DO j = jts, jte
-        DO i = its, ite
-          eco = eco_id(i,j)
-          sum_frac = 0.0
-          DO n = 1, 20
-            sum_frac = sum_frac + vegfrac(i,j,n)
-          END DO
-          IF (sum_frac > 1.01_RKIND) THEN
-            PRINT *, 'WARNING: vegfrac sum > 1 at (', i, ',', j, ') = ', sum_frac
-          END IF
-  
-          DO n = 1, 20
-            frac = vegfrac(i,j,n)
-  
-            SELECT CASE (n)
-            CASE (1)  ! Evergreen_Nleaf_Frst
-              ef = (0.75 * EF_FLM(1) + 0.25 * EF_SML(1))
-              IF (bb_beta == 1 .AND. (eco == 2 .OR. eco == 3 .OR. eco == 4)) THEN
-                beta_val = beta_kaiser(6)
-              ELSE
-                beta_val = beta_wooster
-              END IF
-  
-            CASE (2) ! Evergreen_Bleaf_Frst
-              ef = (0.75 * EF_FLM(1) + 0.25 * EF_SML(1))
-              IF (bb_beta == 1 .AND. eco == 2) THEN
-                beta_val = beta_kaiser(6)
-              ELSE IF (bb_beta == 1 .AND. eco == 5) THEN
-                beta_val = beta_kaiser(5)
-              ELSE
-                beta_val = beta_wooster
-              END IF
-  
-            CASE (3) ! Deciduous_NleafFrst
-              ef = (0.80 * EF_FLM(2) + 0.20 * EF_SML(2))
-              IF (bb_beta == 1 .AND. eco == 2) THEN
-                beta_val = beta_kaiser(6)
-              ELSE IF (bb_beta == 1 .AND. eco == 5) THEN
-                beta_val = beta_kaiser(5)
-              ELSE
-                beta_val = beta_wooster
-              END IF
-  
-            CASE (4) ! Deciduous_Bleaf_Frst
-              ef = (0.80 * EF_FLM(2) + 0.20 * EF_SML(2))
-              IF (bb_beta == 1 .AND. eco == 2) THEN
-                beta_val = beta_kaiser(6)
-              ELSE IF (bb_beta == 1 .AND. eco == 5) THEN
-                beta_val = beta_kaiser(5)
-              ELSE
-                beta_val = beta_wooster
-              END IF
-  
-            CASE (5) ! Mixed_Frst
-              ef = (0.85 * EF_FLM(3) + 0.15 * EF_SML(3))
-              IF (bb_beta == 1 .AND. eco == 2) THEN
-                beta_val = beta_kaiser(6)
-              ELSE IF (bb_beta == 1 .AND. eco == 5) THEN
-                beta_val = beta_kaiser(5)
-              ELSE
-                beta_val = beta_wooster
-              END IF
-  
-            CASE (6,7) ! Shrublands
-              ef = (0.95 * EF_FLM(4) + 0.05 * EF_SML(4))
-              IF (bb_beta == 1 .AND. (eco == 2 .OR. eco == 3 .OR. eco == 4)) THEN
-                beta_val = beta_kaiser(2)
-              ELSE
-                beta_val = beta_wooster
-              END IF
-  
-            CASE (8) ! Woody Savannas
-              ef = (0.95 * EF_FLM(5) + 0.05 * EF_SML(5))
-              beta_val = beta_wooster
-  
-            CASE (9) ! Savannas
-              ef = (0.95 * EF_FLM(6) + 0.05 * EF_SML(6))
-              beta_val = beta_wooster
-  
-            CASE (10) ! Grasslands
-              IF (eco == 10) THEN
-                ef = EF_east(1)
-              ELSE
-                ef = EF_FLM(6)
-              END IF
-              beta_val = beta_wooster
+      
+      do j = jts, jte
+         do i = its, ite
+            do n = 1, min(20,nlcat)
 
-            CASE (11) !Permanent_Wetlands
-              ef = 18.9 
-              beta_val = beta_wooster       
-  
-            CASE (12) ! Croplands
-              IF (eco == 8 .OR. eco == 9) THEN
-                ef = EF_east(2)
-              ELSE
-                ef = 8.2
-              END IF
-              beta_val = beta_wooster
-  
-            CASE (14) ! Cropland_NVeg
-              IF (eco == 8 .OR. eco == 9) THEN
-                ef = EF_east(3)
-              ELSE
-                ef = 8.2
-              END IF
-              beta_val = beta_wooster
-  
-            CASE (18) ! Wooded_Tundra
-              ef = (0.7 * EF_FLM(8) + 0.3 * EF_SML(8))
-              beta_val = beta_wooster
-  
-            CASE (19) ! Mixed_Tundra
-              ef = (0.7 * EF_FLM(7) + 0.3 * EF_SML(7))
-              beta_val = beta_wooster
-  
-            CASE DEFAULT
-              ef = 0.0_RKIND
-              beta_val = 0.0_RKIND
-            END SELECT
-  
-            EFs_map(i,j) = EFs_map(i,j) + (frac * ef * beta_val)
-          END DO
-        END DO
-      END DO
+               if (use_classic_pm25_ef) then
+                  call get_classic_pm25_factor( &
+                       n, eco_id(i,j), bb_beta, class_factor)    
+               else
+                  call get_land_class_factor( &
+                       n, eco_id(i,j), bb_beta, &
+                       ef_diurnal_opt, gmt, xlong(i,j), &
+                       class_factor) 
+               endif     
+               EFs_map(i,j) = EFs_map(i,j) + max(0.0_RKIND,landusef(i,n,j)) * class_factor
+
+            enddo
+         enddo
+      enddo  
   
     end subroutine compute_emission_factors
+ 
+
+      !--------------------------------------------------------------------------
+   ! Return the emission-factor and beta product for one IGBP land class.
+   !--------------------------------------------------------------------------
+   subroutine get_land_class_factor(land_class, eco, bb_beta,                  &
+                                    ef_diurnal_opt, gmt, xlong, class_factor)
+
+      implicit none
+
+      integer, intent(in) :: land_class, eco, bb_beta
+      logical, intent(in) :: ef_diurnal_opt
+      real(RKIND), intent(in) :: gmt, xlong
+      real(RKIND), intent(out) :: class_factor
+
+      real(RKIND) :: base_flam_frac
+      real(RKIND) :: ef, beta_val
+
+      ef             = 0.0_RKIND
+      beta_val       = 0.0_RKIND
+      base_flam_frac = 0.0_RKIND
+
+      select case (land_class)
+
+      case (1)
+         base_flam_frac = 0.75_RKIND
+         call mixed_combustion_ef(base_flam_frac, EF_FLM(1), EF_SML(1),        &
+                                  ef_diurnal_opt, gmt, xlong, ef)
+         if (bb_beta == 1 .and. (eco == 2 .or. eco == 3 .or. eco == 4)) then
+            beta_val = BETA_KAISER(6)
+         else
+            beta_val = BETA_WOOSTER
+         end if
+      case (2)
+         base_flam_frac = 0.75_RKIND
+         call mixed_combustion_ef(base_flam_frac, EF_FLM(1), EF_SML(1),        &
+                                  ef_diurnal_opt, gmt, xlong, ef)
+         if (bb_beta == 1 .and. eco == 2) then
+            beta_val = BETA_KAISER(6)
+         else if (bb_beta == 1 .and. eco == 5) then
+            beta_val = BETA_KAISER(5)
+         else
+            beta_val = BETA_WOOSTER
+         end if
+
+      case (3,4)
+         base_flam_frac = 0.80_RKIND
+         call mixed_combustion_ef(base_flam_frac, EF_FLM(2), EF_SML(2),        &
+                                  ef_diurnal_opt, gmt, xlong, ef)
+         if (bb_beta == 1 .and. eco == 2) then
+            beta_val = BETA_KAISER(6)
+         else if (bb_beta == 1 .and. eco == 5) then
+            beta_val = BETA_KAISER(5)
+         else
+            beta_val = BETA_WOOSTER
+         end if
+
+      case (5)
+         base_flam_frac = 0.85_RKIND
+         call mixed_combustion_ef(base_flam_frac, EF_FLM(3), EF_SML(3),        &
+                                  ef_diurnal_opt, gmt, xlong, ef)
+         if (bb_beta == 1 .and. eco == 2) then
+            beta_val = BETA_KAISER(6)
+         else if (bb_beta == 1 .and. eco == 5) then
+            beta_val = BETA_KAISER(5)
+         else
+            beta_val = BETA_WOOSTER
+         end if
+
+      case (6,7)
+         base_flam_frac = 0.95_RKIND
+         call mixed_combustion_ef(base_flam_frac, EF_FLM(4), EF_SML(4),        &
+                                  ef_diurnal_opt, gmt, xlong, ef)
+         if (bb_beta == 1 .and. (eco == 2 .or. eco == 3 .or. eco == 4)) then
+            beta_val = BETA_KAISER(2)
+         else
+            beta_val = BETA_WOOSTER
+         end if
+
+      case (8)
+         base_flam_frac = 0.95_RKIND
+         call mixed_combustion_ef(base_flam_frac, EF_FLM(5), EF_SML(5),        &
+                                  ef_diurnal_opt, gmt, xlong, ef)
+         beta_val = BETA_WOOSTER
+
+      case (9)
+         base_flam_frac = 0.95_RKIND
+         call mixed_combustion_ef(base_flam_frac, EF_FLM(6), EF_SML(6),        &
+                                  ef_diurnal_opt, gmt, xlong, ef)
+         beta_val = BETA_WOOSTER
+
+      case (10)
+         if (eco == 10) then
+            ef = EF_EAST(1)
+         else
+            ef = EF_FLM(6)
+         end if
+         beta_val = BETA_WOOSTER
+
+      case (11)
+         ef       = 18.9_RKIND
+         beta_val = BETA_WOOSTER
+
+      case (12)
+         if (eco == 8 .or. eco == 9) then
+            ef = EF_EAST(2)
+         else
+            ef = 8.2_RKIND
+         end if
+         beta_val = BETA_WOOSTER
+
+      case (14)
+         if (eco == 8 .or. eco == 9) then
+            ef = EF_EAST(3)
+         else
+            ef = 8.2_RKIND
+         end if
+         beta_val = BETA_WOOSTER
+
+      case (19)
+         base_flam_frac = 0.70_RKIND
+         call mixed_combustion_ef(base_flam_frac, EF_FLM(7), EF_SML(7),        &
+                                  ef_diurnal_opt, gmt, xlong, ef)
+         beta_val = BETA_WOOSTER
+
+      case default
+         ef       = 0.0_RKIND
+         beta_val = 0.0_RKIND
+
+      end select
+
+      class_factor = ef * beta_val
+
+   end subroutine get_land_class_factor
+
+   !--------------------------------------------------------------------------
+   ! Return the classic category-average PM2.5 EF and beta product for one
+   ! IGBP land class. The land-class/ecoregion mapping is shared with the
+   ! category-average gas-phase calculation.
+   !--------------------------------------------------------------------------
+   subroutine get_classic_pm25_factor(land_class, eco, bb_beta, class_factor)
+
+      implicit none
+
+      integer, intent(in) :: land_class, eco, bb_beta
+      real(RKIND), intent(out) :: class_factor
+
+      integer :: fire_category
+      real(RKIND) :: beta_val
+
+      class_factor = 0.0_RKIND
+
+      fire_category = get_fire_category(land_class, eco)
+      if (fire_category == cat_none) return
+
+      call get_gas_beta_factor(land_class, eco, bb_beta, beta_val)
+      if (beta_val <= 0.0_RKIND) return
+
+      class_factor = EF_PM25_CATEGORY(fire_category) * beta_val
+
+   end subroutine get_classic_pm25_factor
+
+   !--------------------------------------------------------------------------
+   ! Map fractional IGBP land cover and EPA Level 1 ecoregion to the
+   ! Andreae (2019) combustion categories.
+   !--------------------------------------------------------------------------
+   integer function get_fire_category(land_class, eco) result(category)
+
+      implicit none
+
+      integer, intent(in) :: land_class, eco
+
+      select case (land_class)
+
+      case (1:5)
+         select case (eco)
+         case (1:5)
+            category = cat_boreal
+         case (14,15)
+            category = cat_tropical
+         case (6:13)
+            category = cat_temperate
+         case default
+            if (land_class == 2) then
+               category = cat_tropical
+            else if (land_class == 3) then
+               category = cat_boreal
+            else
+               category = cat_temperate
+            end if
+         end select
   
+      case (6:10)
+         category = cat_savanna
+
+      case (11)
+         ! Permanent wetland is represented by the peat-fire category.
+         category = cat_peat
+
+      case (12,14)
+         category = cat_agric
+
+      case (18,19)
+         category = cat_boreal
+
+      case default
+         ! Urban, snow and ice, barren land, water, and barren tundra.
+         category = cat_none
+
+      end select
+
+   end function get_fire_category
+
+   !--------------------------------------------------------------------------
+   ! Reproduce the beta selection used by the current PM2.5 calculation.
+   ! This duplication intentionally avoids changing the working PM2.5 code.
+   !--------------------------------------------------------------------------
+   subroutine get_gas_beta_factor(land_class, eco, bb_beta, beta_val)
+
+      implicit none
+
+      integer, intent(in) :: land_class, eco, bb_beta
+      real(RKIND), intent(out) :: beta_val
+
+      beta_val = 0.0_RKIND
+
+      select case (land_class)
+
+      case (1)
+         if (bb_beta == 1 .and. &
+             (eco == 2 .or. eco == 3 .or. eco == 4)) then
+            beta_val = BETA_KAISER(6)
+         else
+            beta_val = BETA_WOOSTER
+         end if
+
+      case (2:5)
+         if (bb_beta == 1 .and. eco == 2) then
+            beta_val = BETA_KAISER(6)
+         else if (bb_beta == 1 .and. eco == 5) then
+            beta_val = BETA_KAISER(5)
+         else
+            beta_val = BETA_WOOSTER
+         end if
+
+      case (6,7)
+         if (bb_beta == 1 .and. &
+             (eco == 2 .or. eco == 3 .or. eco == 4)) then
+            beta_val = BETA_KAISER(2)
+         else
+            beta_val = BETA_WOOSTER
+         end if
+
+      case (8:12,14,18,19)
+         beta_val = BETA_WOOSTER
+
+      case default
+         beta_val = 0.0_RKIND
+
+      end select
+
+   end subroutine get_gas_beta_factor
+
+   !--------------------------------------------------------------------------
+   ! Blend flaming and smoldering PM2.5 emission factors.
+   !--------------------------------------------------------------------------
+   subroutine mixed_combustion_ef(base_flam_frac, ef_flam, ef_smold,           &
+                                  ef_diurnal_opt, gmt, xlong, ef)
+
+      implicit none
+
+      real(RKIND), intent(in) :: base_flam_frac, ef_flam, ef_smold
+      real(RKIND), intent(in) :: gmt, xlong
+      logical, intent(in) :: ef_diurnal_opt
+      real(RKIND), intent(out) :: ef
+
+      real(RKIND) :: flam_frac, smold_frac
+
+      if (ef_diurnal_opt) then
+         flam_frac = get_flam_frac(base_flam_frac, gmt, xlong)
+      else
+         flam_frac = base_flam_frac
+      endif
+
+      smold_frac = 1.0_RKIND - flam_frac
+      ef = flam_frac * ef_flam + smold_frac * ef_smold
+
+   end subroutine mixed_combustion_ef
+
+   !--------------------------------------------------------------------------
+   ! Select the EBB2 time block from elapsed model time.
+   !--------------------------------------------------------------------------
+   integer function get_fre_block(ktau, dt, bb_input_prevh, nblocks) result(blk)
+
+      implicit none
+
+      integer, intent(in) :: ktau, bb_input_prevh, nblocks
+      real(RKIND), intent(in) :: dt
+
+      integer :: hour_int
+
+      if (nblocks <= 1 .or. bb_input_prevh <= 0) then
+         blk = 1
+         return
+      end if
+
+      hour_int = floor(real(ktau, RKIND) * dt / secsperhour)
+      blk = floor(real(mod(hour_int, 24), RKIND) / &
+                  real(bb_input_prevh, RKIND)) + 1
+      blk = min(max(blk, 1), nblocks)
+
+   end function get_fre_block
+
+
+   !--------------------------------------------------------------------------
+   ! Local solar-hour helper for the optional flaming-fraction cycle.
+   !--------------------------------------------------------------------------
+   real(RKIND) function get_local_hour(gmt, xlong) result(local_hour)
+
+      implicit none
+
+      real(RKIND), intent(in) :: gmt, xlong
+      real(RKIND) :: lon_deg
+
+      lon_deg = xlong
+      if (lon_deg > 180.0_RKIND) lon_deg = lon_deg - 360.0_RKIND
+
+      local_hour = modulo(gmt + lon_deg / 15.0_RKIND, 24.0_RKIND)
+
+   end function get_local_hour
+
+
+   !--------------------------------------------------------------------------
+   ! Smooth local-time variation of the flaming fraction.
+   !--------------------------------------------------------------------------
+   real(RKIND) function get_flam_frac(base_flam_frac, gmt, xlong) result(flam_frac)
+
+      implicit none
+
+      real(RKIND), intent(in) :: base_flam_frac, gmt, xlong
+      ! -----------------------------------------------------------
+      ! future namelist options
+      ! ef_peak_local_hour
+      ! ef_diurnal_amplitude
+      ! ef_percent_change
+      ! ef_flam_floor
+      ! ef_flam_ceiling
+      ! -------------------------------------------------------
+
+      real(RKIND), parameter :: PI = 3.1415_RKIND
+      real(RKIND), parameter :: EF_PEAK_LOCAL_HOUR = 15.0_RKIND
+      real(RKIND), parameter :: EF_DIURNAL_AMPLITUDE = 0.20_RKIND
+      real(RKIND), parameter :: EF_PERCENT_CHANGE    = 0.0_RKIND
+      real(RKIND), parameter :: EF_FLAM_FLOOR   = 0.05_RKIND
+      real(RKIND), parameter :: EF_FLAM_CEILING = 0.98_RKIND
+
+      real(RKIND) :: local_hour, phase, adjusted_base
+
+      local_hour = get_local_hour(gmt, xlong)
+      ! Apply a relative percentage adjustment to the original
+      ! vegetation-dependent flaming fraction
+      adjusted_base = base_flam_frac * &
+                    (1.0_RKIND + EF_PERCENT_CHANGE / 100.0_RKIND)
+      adjusted_base = min(max(adjusted_base, EF_FLAM_FLOOR), &
+                     EF_FLAM_CEILING)
+
+       ! Smooth 24-hour cycle, maximum at EF_PEAK_LOCAL_HOUR.
+      phase = cos(2.0_RKIND * PI * &
+                  (local_hour - EF_PEAK_LOCAL_HOUR) / 24.0_RKIND)
+
+      ! Apply the diurnal perturbation.
+      !flam_frac = base_flam_frac + AMPLITUDE * phase
+      !flam_frac = min(max(flam_frac, FLAM_MIN), FLAM_MAX)
+      flam_frac = adjusted_base + EF_DIURNAL_AMPLITUDE * phase
+      flam_frac = min(max(flam_frac, EF_FLAM_FLOOR), &
+              EF_FLAM_CEILING)
+   end function get_flam_frac
+
+
   !-------------------------------------------------------------------------------
   ! Subroutine: calculate_smoke_emissions
   ! Description:
@@ -229,7 +529,8 @@ module module_fire_emissions
       REAL(RKIND), INTENT(INOUT),DIMENSION(1:num_bb_pt, kms:kme, num_e_bb_in)   :: ebu
 
       !Local variables
-      INTEGER :: i, j, blk, hour_int, nv, ii
+      !INTEGER :: i, j, blk, hour_int, nv, ii
+      INTEGER :: i, j, blk, nv, ii
       REAL(RKIND) ::  hour_tmp
       REAL(RKIND), PARAMETER :: fg_to_ug = 1.0e6
       REAL(RKIND), PARAMETER :: to_s = 3600.0
@@ -238,19 +539,11 @@ module module_fire_emissions
       !JR st -> future forecast block selection
       !IF ( ebb_dcycle .eq. 2 ) then
       if (ebb_dcycle == -1 .and. (EBB == 2 .or. EBB == 3)) then
-      !JR ends        
-         ! Current integration hour
-         hour_int = FLOOR(ktau*dt/3600.)
-         ! Reset if > 24 and determine how many bb_input_prevh(s) have passed
-         hour_tmp = MOD(hour_int, 24) / bb_input_prevh
-         ! Make it an integer + 1
-         blk = FLOOR(hour_tmp) + 1
-         IF (blk < 1) blk = 1
-         IF (blk > 24 / bb_input_prevh) blk = 24 / bb_input_prevh
-      ELSE
-         ! EBB = 1 has only one time
+         blk = get_fre_block(ktau,dt,bb_input_prevh,nblocks)
+      else
          blk = 1
-      ENDIF
+      endif        
+      !JR ends        
     
       !if ebb_dcycle == 2 then ebb_dc1 do not use blocks? should be 24
       j = 1
