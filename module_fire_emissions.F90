@@ -24,12 +24,14 @@ module module_fire_emissions
     subroutine compute_emission_factors(EFs_map, vegfrac, bb_beta,                       &
                                         eco_id, efs_smold, efs_flam, efs_rsmold,         &
                                         fmc_avg, wetness,                                &
-                                        nlcat, dt, gmt,                                  &
+                                        ef_diurnal_opt, nlcat, dt, gmt, xlong,           & !JR added xlong,ef_diurnal_opt
                                         ids, ide, jds, jde, kds, kde,                    &
                                         ims, ime, jms, jme, kms, kme,                    &
                                         its, ite, jts, jte, kts, kte)
   
       implicit none
+      LOGICAL, INTENT(IN) :: ef_diurnal_opt  !JR added xlong
+      REAL(RKIND), DIMENSION(ims:ime,jms:jme), INTENT(IN) :: xlong   !JR added xlong
       INTEGER, INTENT(IN) :: ids, ide, jds, jde, kds, kde
       INTEGER, INTENT(IN) :: ims, ime, jms, jme, kms, kme
       INTEGER, INTENT(IN) :: its, ite, jts, jte, kts, kte
@@ -201,7 +203,7 @@ module module_fire_emissions
   !   fre_avg declared always as a 3-D dummy
   !-------------------------------------------------------------------------------
     subroutine calculate_smoke_emissions(dt, julday, nlcat, EFs_map, fre_avg,       &
-                                         ebb_dcycle, area, nblocks, ktau,           &
+                                         ebb_dcycle, EBB, area, nblocks, ktau,      & !JR added EBB
                                          bb_input_prevh, ebu, num_e_bb_in,          &
                                          num_bb_pt,                                 &
                                          myrank,bb_pt_rank,bb_pt_local_cell_idx,         &
@@ -210,6 +212,7 @@ module module_fire_emissions
                                          its, ite, jts, jte, kts, kte)
   
       implicit none
+      INTEGER, INTENT(IN) :: EBB !JR added
       INTEGER, INTENT(IN) :: julday, nlcat, num_e_bb_in, num_bb_pt, myrank
       INTEGER, INTENT(IN) :: ids, ide, jds, jde, kds, kde
       INTEGER, INTENT(IN) :: ims, ime, jms, jme, kms, kme
@@ -232,7 +235,10 @@ module module_fire_emissions
       REAL(RKIND), PARAMETER :: to_s = 3600.0
        
      ! for EBB = 2, blk > 1
-      IF ( ebb_dcycle .eq. 2 ) then
+      !JR st -> future forecast block selection
+      !IF ( ebb_dcycle .eq. 2 ) then
+      if (ebb_dcycle == -1 .and. (EBB == 2 .or. EBB == 3)) then
+      !JR ends        
          ! Current integration hour
          hour_int = FLOOR(ktau*dt/3600.)
          ! Reset if > 24 and determine how many bb_input_prevh(s) have passed
@@ -364,7 +370,10 @@ subroutine diurnal_cycle(  dtstep,dz8w,rho_phy,pi,ebb_min,          &
   !RAR: change this to the fractional LU type; fire_type: 0- no fires, 1- Ag
   ! or urban fires, 2- prescribed fires in wooded area, 3- wildfires
   j = 1
-  if (ebb_dcycle==2) then
+  !JR st -> future forecast block selection
+  !if (ebb_dcycle==2) then
+  if (ebb_dcycle == -1) then       !.and. (EBB == 2 .or. EBB == 3)) then
+  !JR ends
      do ii = 1, num_bb_pt
         ! Skip if we are on the wrong rank for this EGU
         if (myrank /= bb_pt_rank(ii)) cycle
@@ -401,7 +410,10 @@ subroutine diurnal_cycle(  dtstep,dz8w,rho_phy,pi,ebb_min,          &
   endif
 
 
-  if (ebb_dcycle==2) then 
+  !JR st -> future forecast block selection
+  !if (ebb_dcycle==2) then 
+  if (ebb_dcycle == -1) then   !.and. (EBB == 2 .or. EBB == 3)) then
+  !JR ends        
     !do blk = 1, nblocks
      do ii = 1, num_bb_pt
         ! Skip if we are on the wrong rank for this EGU
